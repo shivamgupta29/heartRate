@@ -380,6 +380,22 @@ let filtered     = [];   // after filter applied
 let currentPage  = 0;
 let activeFilter = 'all';
 
+function setBLEUIConnected() {
+  document.getElementById('ble-status').textContent = 'Connected';
+  document.getElementById('ble-status').classList.add('connected');
+  const btn = document.getElementById('connect-btn');
+  btn.disabled = true;
+  btn.textContent = 'Connected';
+}
+
+function setBLEUIDisconnected(label = 'Reconnect') {
+  document.getElementById('ble-status').textContent = 'Disconnected';
+  document.getElementById('ble-status').classList.remove('connected');
+  const btn = document.getElementById('connect-btn');
+  btn.disabled = false;
+  btn.textContent = label;
+}
+
 // ── Storage Helpers ──────────────────────────────────────────
 function loadRecords() {
   try {
@@ -411,12 +427,29 @@ function updateStorageInfo() {
 }
 
 // ── BLE Connect ──────────────────────────────────────────────
+async function subscribeCharacteristic(service, uuid, handler, label) {
+  try {
+    const characteristic = await service.getCharacteristic(uuid);
+    await characteristic.startNotifications();
+    characteristic.addEventListener('characteristicvaluechanged', handler);
+    console.log(`[BLE] ${label} notifications started`);
+    return characteristic;
+  } catch (err) {
+    console.warn(`[BLE] ${label} unavailable:`, err);
+    return null;
+  }
+}
+
 async function connectBLE() {
   if (!navigator.bluetooth) {
     showBrowserGate();
     return;
   }
   try {
+    const btn = document.getElementById('connect-btn');
+    btn.disabled = true;
+    btn.textContent = 'Connecting...';
+
     bleDevice = await navigator.bluetooth.requestDevice({
       filters: [{ name: 'VitalMonitor' }],
       optionalServices: [SERVICE_UUID]
@@ -424,40 +457,22 @@ async function connectBLE() {
     const server  = await bleDevice.gatt.connect();
     const service = await server.getPrimaryService(SERVICE_UUID);
 
-    const vitalsChar = await service.getCharacteristic(CHAR_VITALS);
-    await vitalsChar.startNotifications();
-    vitalsChar.addEventListener('characteristicvaluechanged', onVitals);
-
-    const ecgChar = await service.getCharacteristic(CHAR_ECG);
-    await ecgChar.startNotifications();
-    ecgChar.addEventListener('characteristicvaluechanged', onECGChunk);
-
-    const ppgChar = await service.getCharacteristic(CHAR_PPG);
-    await ppgChar.startNotifications();
-    ppgChar.addEventListener('characteristicvaluechanged', onPPGChunk);
-
-    const alertChar = await service.getCharacteristic(CHAR_ALERT);
-    await alertChar.startNotifications();
-    alertChar.addEventListener('characteristicvaluechanged', onAlert);
-
     bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+    setBLEUIConnected();
 
-    document.getElementById('ble-status').textContent = 'Connected';
-    document.getElementById('ble-status').classList.add('connected');
-    document.getElementById('connect-btn').disabled = true;
-    document.getElementById('connect-btn').textContent = 'Connected ✓';
+    await subscribeCharacteristic(service, CHAR_VITALS, onVitals, 'Vitals');
+    await subscribeCharacteristic(service, CHAR_ECG, onECGChunk, 'ECG');
+    await subscribeCharacteristic(service, CHAR_PPG, onPPGChunk, 'PPG');
+    await subscribeCharacteristic(service, CHAR_ALERT, onAlert, 'Alert');
   } catch (err) {
     console.error(err);
+    setBLEUIDisconnected('Connect to Device');
     alert('BLE connection failed: ' + err.message);
   }
 }
 
 function onDisconnected() {
-  document.getElementById('ble-status').textContent = 'Disconnected';
-  document.getElementById('ble-status').classList.remove('connected');
-  const btn = document.getElementById('connect-btn');
-  btn.disabled = false;
-  btn.textContent = 'Reconnect';
+  setBLEUIDisconnected('Reconnect');
 }
 
 // ── BLE Chunk Handlers ───────────────────────────────────────
@@ -498,12 +513,13 @@ function onVitals(event) {
 
   const rhythmCard = document.getElementById('rhythm-card');
   const rhythmVal  = document.getElementById('val-rhythm');
+  const rhythmText = data.rhythm ? data.rhythm.replace('_', ' ') : null;
   if (data.alert) {
-    rhythmVal.textContent = '⚠ Abnormal';
+    rhythmVal.textContent = rhythmText ? `⚠ ${rhythmText}` : '⚠ Abnormal';
     rhythmCard.classList.add('alert-card');
     rhythmCard.classList.remove('ok-card');
   } else {
-    rhythmVal.textContent = '✓ Normal';
+    rhythmVal.textContent = rhythmText && rhythmText !== 'NO SIGNAL' ? `✓ ${rhythmText}` : '✓ Normal';
     rhythmCard.classList.add('ok-card');
     rhythmCard.classList.remove('alert-card');
   }
@@ -522,6 +538,7 @@ function onVitals(event) {
     bpm:       data.bpm,
     spo2:      data.spo2,
     hrv:       data.hrv,
+    rhythm:    data.rhythm,
     alert:     !!data.alert,
     // Store waveform samples captured since last vitals packet
     ecg:       pendingECG.slice(),
@@ -705,6 +722,7 @@ function buildHistoryItem(record) {
   const date = ts.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
   const time = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const hrv  = record.hrv != null ? parseFloat(record.hrv).toFixed(1) : '--';
+  const rhythm = record.rhythm ? record.rhythm.replace('_', ' ') : (record.alert ? 'Alert' : 'OK');
 
   li.innerHTML = `
     <div class="hist-item-header" onclick="toggleDetail(this)">
@@ -717,7 +735,7 @@ function buildHistoryItem(record) {
         <div class="sub-line">${date}</div>
       </div>
       <div class="hist-right">
-        <span class="${record.alert ? 'tag-alert' : 'tag-ok'}">${record.alert ? '⚠ Alert' : '✓ OK'}</span>
+        <span class="${record.alert ? 'tag-alert' : 'tag-ok'}">${record.alert ? '⚠ ' : '✓ '}${rhythm}</span>
         <span class="timestamp">${time}</span>
         <span class="expand-arrow">▼</span>
       </div>
