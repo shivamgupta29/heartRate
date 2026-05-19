@@ -365,14 +365,15 @@ const CHAR_PPG     = '12345678-1234-1234-1234-123456789ab3';
 const CHAR_ALERT   = '12345678-1234-1234-1234-123456789ab4';
 
 const STORAGE_KEY  = 'vitalmonitor_records';
-const MAX_RECORDS  = 200;
+const MAX_RECORDS  = 60;
 const PAGE_SIZE    = 15;
+const MAX_SAVED_ECG_SAMPLES = 300;
+const MAX_SAVED_PPG_SAMPLES = 150;
 
 let bleDevice  = null;
 let ecgChunks  = [];
 let ppgChunks  = [];
-let pendingECG = [];   // accumulates across BLE chunks until vitals arrive
-let pendingPPG = [];
+let activeSession = null;
 
 // State
 let allRecords   = [];   // full array from localStorage
@@ -394,6 +395,114 @@ function setBLEUIDisconnected(label = 'Reconnect') {
   const btn = document.getElementById('connect-btn');
   btn.disabled = false;
   btn.textContent = label;
+}
+
+function downsample(data, maxSamples) {
+  if (!data || data.length <= maxSamples) return data ? data.slice() : [];
+  const out = [];
+  const step = (data.length - 1) / (maxSamples - 1);
+  for (let i = 0; i < maxSamples; i++) {
+    out.push(data[Math.round(i * step)]);
+  }
+  return out;
+}
+
+function startSession(mode, data) {
+  const now = new Date().toISOString();
+  activeSession = {
+    id: Date.now(),
+    mode: mode || 'UNKNOWN',
+    timestamp: now,
+    endTimestamp: now,
+    vitalsCount: 0,
+    bpmSum: 0,
+    spo2Sum: 0,
+    hrvSum: 0,
+    bpmCount: 0,
+    spo2Count: 0,
+    hrvCount: 0,
+    bpm: data?.bpm,
+    spo2: data?.spo2,
+    hrv: data?.hrv,
+    rhythm: data?.rhythm,
+    alert: !!data?.alert,
+    ecg: [],
+    ppg: []
+  };
+}
+
+function updateSessionVitals(data) {
+  if (!activeSession) return;
+  activeSession.endTimestamp = new Date().toISOString();
+  activeSession.vitalsCount++;
+  activeSession.bpm = data.bpm;
+  activeSession.spo2 = data.spo2;
+  activeSession.hrv = data.hrv;
+  activeSession.rhythm = data.rhythm || activeSession.rhythm;
+  activeSession.alert = activeSession.alert || !!data.alert;
+
+  if (data.bpm != null && !isNaN(Number(data.bpm))) {
+    activeSession.bpmSum += Number(data.bpm);
+    activeSession.bpmCount++;
+  }
+  if (data.spo2 != null && !isNaN(Number(data.spo2))) {
+    activeSession.spo2Sum += Number(data.spo2);
+    activeSession.spo2Count++;
+  }
+  if (data.hrv != null && !isNaN(Number(data.hrv))) {
+    activeSession.hrvSum += Number(data.hrv);
+    activeSession.hrvCount++;
+  }
+}
+
+function appendSessionSamples(kind, values) {
+  if (!activeSession || !values || values.length === 0) return;
+  activeSession[kind].push(...values);
+}
+
+function finalizeActiveSession() {
+  if (!activeSession) return;
+  const hasVitals = activeSession.vitalsCount > 0;
+  const hasWaveform = activeSession.ecg.length > 0 || activeSession.ppg.length > 0;
+  if (!hasVitals && !hasWaveform) {
+    activeSession = null;
+    return;
+  }
+
+  const start = new Date(activeSession.timestamp);
+  const end = new Date(activeSession.endTimestamp);
+  const durationSec = Math.max(1, Math.round((end - start) / 1000));
+
+  const record = {
+    id: activeSession.id,
+    mode: activeSession.mode,
+    timestamp: activeSession.timestamp,
+    endTimestamp: activeSession.endTimestamp,
+    durationSec,
+    bpm: activeSession.bpmCount ? Math.round(activeSession.bpmSum / activeSession.bpmCount) : activeSession.bpm,
+    spo2: activeSession.spo2Count ? Math.round(activeSession.spo2Sum / activeSession.spo2Count) : activeSession.spo2,
+    hrv: activeSession.hrvCount ? activeSession.hrvSum / activeSession.hrvCount : activeSession.hrv,
+    rhythm: activeSession.rhythm,
+    alert: !!activeSession.alert,
+    ecg: downsample(activeSession.ecg, MAX_SAVED_ECG_SAMPLES),
+    ppg: downsample(activeSession.ppg, MAX_SAVED_PPG_SAMPLES)
+  };
+
+  allRecords.unshift(record);
+  activeSession = null;
+  saveRecords();
+  applyFilterAndRender();
+}
+
+function handleVitalsSession(data) {
+  const mode = data.mode || activeSession?.mode || 'UNKNOWN';
+  if (!activeSession) {
+    startSession(mode, data);
+  } else if (activeSession.mode !== mode) {
+    finalizeActiveSession();
+    startSession(mode, data);
+  }
+  updateSessionVitals(data);
 }
 
 // ── Storage Helpers ──────────────────────────────────────────
@@ -472,6 +581,7 @@ async function connectBLE() {
 }
 
 function onDisconnected() {
+  finalizeActiveSession();
   setBLEUIDisconnected('Reconnect');
 }
 
@@ -479,7 +589,7 @@ function onDisconnected() {
 function onECGChunk(event) {
   const chunk = new TextDecoder().decode(event.target.value);
   const vals  = chunk.split(',').map(Number).filter(v => !isNaN(v));
-  pendingECG.push(...vals);
+  appendSessionSamples('ecg', vals);
   ecgChunks.push(...vals);
 
   if (ecgChunks.length >= 250) {
@@ -491,7 +601,7 @@ function onECGChunk(event) {
 function onPPGChunk(event) {
   const chunk = new TextDecoder().decode(event.target.value);
   const vals  = chunk.split(',').map(Number).filter(v => !isNaN(v));
-  pendingPPG.push(...vals);
+  appendSessionSamples('ppg', vals);
   ppgChunks.push(...vals);
 
   if (ppgChunks.length >= 100) {
@@ -531,25 +641,7 @@ function onVitals(event) {
   document.getElementById('val-spo2').style.color =
     spo2 < 95 ? 'var(--red)' : 'var(--green)';
 
-  // ── Build and persist full record ──
-  const record = {
-    id:        Date.now(),
-    timestamp: new Date().toISOString(),
-    bpm:       data.bpm,
-    spo2:      data.spo2,
-    hrv:       data.hrv,
-    rhythm:    data.rhythm,
-    alert:     !!data.alert,
-    // Store waveform samples captured since last vitals packet
-    ecg:       pendingECG.slice(),
-    ppg:       pendingPPG.slice()
-  };
-  pendingECG = [];
-  pendingPPG = [];
-
-  allRecords.unshift(record);   // newest first
-  saveRecords();
-  applyFilterAndRender();
+  handleVitalsSession(data);
 }
 
 // ── Alert Handler ────────────────────────────────────────────
@@ -723,11 +815,14 @@ function buildHistoryItem(record) {
   const time = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const hrv  = record.hrv != null ? parseFloat(record.hrv).toFixed(1) : '--';
   const rhythm = record.rhythm ? record.rhythm.replace('_', ' ') : (record.alert ? 'Alert' : 'OK');
+  const mode = record.mode || 'Snapshot';
+  const duration = record.durationSec ? ` · ${record.durationSec}s` : '';
 
   li.innerHTML = `
     <div class="hist-item-header" onclick="toggleDetail(this)">
       <div class="hist-vitals">
         <div class="main-line">
+          <b>${mode}${duration}</b> &nbsp;·&nbsp;
           BPM <b>${record.bpm ?? '--'}</b> &nbsp;·&nbsp;
           SpO₂ <b>${record.spo2 != null ? record.spo2 : '--'}%</b> &nbsp;·&nbsp;
           HRV <b>${hrv} ms</b>
@@ -794,6 +889,7 @@ function toggleDetail(header) {
 // ── Clear History ─────────────────────────────────────────────
 function clearHistory() {
   if (!confirm(`Delete all ${allRecords.length} recordings? This cannot be undone.`)) return;
+  activeSession = null;
   allRecords = [];
   saveRecords();
   applyFilterAndRender();
