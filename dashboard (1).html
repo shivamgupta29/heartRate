@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Vital Monitor</title>
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --card: #161616;
+    --border: #2a2a2a;
+    --accent: #00e5ff;
+    --green: #00e676;
+    --red: #ff1744;
+    --yellow: #ffea00;
+    --text: #e0e0e0;
+    --muted: #666;
+    --ecg-color: #00e676;
+    --ppg-color: #00e5ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh;
+    padding: 16px;
+  }
+
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+  }
+  header h1 { font-size: 1.2rem; font-weight: 700; letter-spacing: 0.05em; color: var(--accent); }
+  #ble-status {
+    font-size: 0.75rem;
+    padding: 4px 10px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  #ble-status.connected { color: var(--green); border-color: var(--green); }
+
+  #connect-btn {
+    width: 100%;
+    padding: 14px;
+    background: var(--accent);
+    color: #000;
+    font-size: 1rem;
+    font-weight: 700;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    margin-bottom: 20px;
+    letter-spacing: 0.05em;
+  }
+  #connect-btn:disabled { background: var(--border); color: var(--muted); cursor: not-allowed; }
+
+  #alert-banner {
+    display: none;
+    background: var(--red);
+    color: #fff;
+    text-align: center;
+    font-weight: 700;
+    padding: 12px;
+    border-radius: 12px;
+    margin-bottom: 16px;
+    animation: pulse 1s infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
+
+  .vitals-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .vital-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px 12px;
+    text-align: center;
+  }
+  .vital-card .label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .vital-card .value {
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--accent);
+  }
+  .vital-card .unit { font-size: 0.75rem; color: var(--muted); margin-top: 4px; }
+  .vital-card.alert-card .value { color: var(--red); }
+  .vital-card.ok-card .value    { color: var(--green); }
+
+  .wave-panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px;
+    margin-bottom: 16px;
+  }
+  .wave-panel h2 {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  canvas {
+    width: 100%;
+    height: 120px;
+    display: block;
+    border-radius: 8px;
+  }
+
+  /* ── History Section ── */
+  #history-section { margin-top: 8px; }
+  .history-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .history-header h2 {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+  }
+  .history-header-right {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  #storage-info {
+    font-size: 0.65rem;
+    color: var(--muted);
+  }
+  #clear-btn {
+    font-size: 0.7rem;
+    padding: 4px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--red);
+    color: var(--red);
+    background: transparent;
+    cursor: pointer;
+  }
+  #clear-btn:hover { background: rgba(255,23,68,0.1); }
+
+  /* ── History Filter Bar ── */
+  .filter-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  .filter-btn {
+    flex-shrink: 0;
+    font-size: 0.7rem;
+    padding: 5px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    background: transparent;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .filter-btn.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(0,229,255,0.07);
+  }
+
+  #history-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* ── History Item ── */
+  .hist-item {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    transition: border-color 0.2s;
+  }
+  .hist-item.has-alert { border-color: rgba(255,23,68,0.4); }
+  .hist-item-header {
+    padding: 10px 14px;
+    font-size: 0.8rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    user-select: none;
+  }
+  .hist-item-header:active { background: rgba(255,255,255,0.03); }
+  .hist-vitals { display: flex; flex-direction: column; gap: 3px; }
+  .hist-vitals .main-line { font-size: 0.82rem; }
+  .hist-vitals .sub-line  { font-size: 0.7rem; color: var(--muted); }
+  .hist-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .hist-right .timestamp { color: var(--muted); font-size: 0.65rem; line-height: 1.4; text-align: right; }
+  .tag-alert { color: var(--red); font-weight: 700; font-size: 0.72rem; }
+  .tag-ok    { color: var(--green); font-size: 0.72rem; }
+  .expand-arrow { color: var(--muted); font-size: 0.65rem; margin-top: 2px; transition: transform 0.2s; }
+  .hist-item.expanded .expand-arrow { transform: rotate(180deg); }
+
+  /* ── Expanded Detail Panel ── */
+  .hist-detail {
+    display: none;
+    padding: 0 14px 14px;
+    border-top: 1px solid var(--border);
+  }
+  .hist-item.expanded .hist-detail { display: block; }
+  .detail-wave-label {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 10px 0 6px;
+  }
+  .detail-canvas {
+    width: 100%;
+    height: 90px;
+    display: block;
+    border-radius: 6px;
+  }
+  .detail-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .detail-stat {
+    background: var(--bg);
+    border-radius: 8px;
+    padding: 8px;
+    text-align: center;
+  }
+  .detail-stat .ds-label { font-size: 0.6rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+  .detail-stat .ds-value { font-size: 1.1rem; font-weight: 700; margin-top: 2px; }
+  .no-wave { font-size: 0.72rem; color: var(--muted); font-style: italic; padding: 8px 0; }
+
+  .placeholder {
+    color: var(--muted);
+    font-size: 0.85rem;
+    text-align: center;
+    padding: 20px 0;
+  }
+
+  /* ── Pagination ── */
+  .pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+    margin-top: 14px;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+  .page-btn {
+    padding: 5px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 0.75rem;
+  }
+  .page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚡ Vital Monitor</h1>
+  <span id="ble-status">Disconnected</span>
+</header>
+
+<button id="connect-btn" onclick="connectBLE()">Connect to Device</button>
+
+<div id="alert-banner">⚠️ ABNORMAL RHYTHM DETECTED</div>
+
+<!-- Vitals -->
+<div class="vitals-grid">
+  <div class="vital-card">
+    <div class="label">Heart Rate</div>
+    <div class="value" id="val-bpm">--</div>
+    <div class="unit">BPM</div>
+  </div>
+  <div class="vital-card">
+    <div class="label">SpO₂</div>
+    <div class="value" id="val-spo2">--</div>
+    <div class="unit">%</div>
+  </div>
+  <div class="vital-card">
+    <div class="label">HRV (RMSSD)</div>
+    <div class="value" id="val-hrv">--</div>
+    <div class="unit">ms</div>
+  </div>
+  <div class="vital-card" id="rhythm-card">
+    <div class="label">Rhythm</div>
+    <div class="value" id="val-rhythm" style="font-size:1rem;padding-top:8px;">--</div>
+    <div class="unit">&nbsp;</div>
+  </div>
+</div>
+
+<!-- Live ECG -->
+<div class="wave-panel">
+  <h2>ECG Waveform</h2>
+  <canvas id="ecg-canvas"></canvas>
+</div>
+
+<!-- Live PPG -->
+<div class="wave-panel">
+  <h2>PPG Waveform (IR)</h2>
+  <canvas id="ppg-canvas"></canvas>
+</div>
+
+<!-- History -->
+<div id="history-section">
+  <div class="history-header">
+    <h2>Recording History</h2>
+    <div class="history-header-right">
+      <span id="storage-info"></span>
+      <button id="clear-btn" onclick="clearHistory()">Clear All</button>
+    </div>
+  </div>
+
+  <div class="filter-bar">
+    <button class="filter-btn active" data-filter="all"    onclick="setFilter('all')">All</button>
+    <button class="filter-btn"        data-filter="alert"  onclick="setFilter('alert')">⚠ Alerts Only</button>
+    <button class="filter-btn"        data-filter="today"  onclick="setFilter('today')">Today</button>
+    <button class="filter-btn"        data-filter="week"   onclick="setFilter('week')">This Week</button>
+  </div>
+
+  <ul id="history-list"></ul>
+
+  <div class="pagination" id="pagination" style="display:none">
+    <button class="page-btn" id="prev-btn" onclick="changePage(-1)">← Prev</button>
+    <span id="page-info"></span>
+    <button class="page-btn" id="next-btn" onclick="changePage(1)">Next →</button>
+  </div>
+</div>
+
+<script>
+// ── BLE UUIDs ────────────────────────────────────────────────
+const SERVICE_UUID = '12345678-1234-1234-1234-123456789abc';
+const CHAR_VITALS  = '12345678-1234-1234-1234-123456789ab1';
+const CHAR_ECG     = '12345678-1234-1234-1234-123456789ab2';
+const CHAR_PPG     = '12345678-1234-1234-1234-123456789ab3';
+const CHAR_ALERT   = '12345678-1234-1234-1234-123456789ab4';
+
+const STORAGE_KEY  = 'vitalmonitor_records';
+const MAX_RECORDS  = 200;
+const PAGE_SIZE    = 15;
+
+let bleDevice  = null;
+let ecgChunks  = [];
+let ppgChunks  = [];
+let pendingECG = [];   // accumulates across BLE chunks until vitals arrive
+let pendingPPG = [];
+
+// State
+let allRecords   = [];   // full array from localStorage
+let filtered     = [];   // after filter applied
+let currentPage  = 0;
+let activeFilter = 'all';
+
+// ── Storage Helpers ──────────────────────────────────────────
+function loadRecords() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    allRecords = raw ? JSON.parse(raw) : [];
+  } catch { allRecords = []; }
+}
+
+function saveRecords() {
+  try {
+    // Trim to MAX_RECORDS (keep newest)
+    if (allRecords.length > MAX_RECORDS) {
+      allRecords = allRecords.slice(0, MAX_RECORDS);
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(allRecords));
+    updateStorageInfo();
+  } catch (e) {
+    console.warn('localStorage save failed:', e);
+  }
+}
+
+function updateStorageInfo() {
+  try {
+    const bytes = new Blob([localStorage.getItem(STORAGE_KEY) || '']).size;
+    const kb    = (bytes / 1024).toFixed(1);
+    document.getElementById('storage-info').textContent =
+      `${allRecords.length} records · ${kb} KB`;
+  } catch {}
+}
+
+// ── BLE Connect ──────────────────────────────────────────────
+async function connectBLE() {
+  if (!navigator.bluetooth) {
+    showBrowserGate();
+    return;
+  }
+  try {
+    bleDevice = await navigator.bluetooth.requestDevice({
+      filters: [{ name: 'VitalMonitor' }],
+      optionalServices: [SERVICE_UUID]
+    });
+    const server  = await bleDevice.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+
+    const vitalsChar = await service.getCharacteristic(CHAR_VITALS);
+    await vitalsChar.startNotifications();
+    vitalsChar.addEventListener('characteristicvaluechanged', onVitals);
+
+    const ecgChar = await service.getCharacteristic(CHAR_ECG);
+    await ecgChar.startNotifications();
+    ecgChar.addEventListener('characteristicvaluechanged', onECGChunk);
+
+    const ppgChar = await service.getCharacteristic(CHAR_PPG);
+    await ppgChar.startNotifications();
+    ppgChar.addEventListener('characteristicvaluechanged', onPPGChunk);
+
+    const alertChar = await service.getCharacteristic(CHAR_ALERT);
+    await alertChar.startNotifications();
+    alertChar.addEventListener('characteristicvaluechanged', onAlert);
+
+    bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+    document.getElementById('ble-status').textContent = 'Connected';
+    document.getElementById('ble-status').classList.add('connected');
+    document.getElementById('connect-btn').disabled = true;
+    document.getElementById('connect-btn').textContent = 'Connected ✓';
+  } catch (err) {
+    console.error(err);
+    alert('BLE connection failed: ' + err.message);
+  }
+}
+
+function onDisconnected() {
+  document.getElementById('ble-status').textContent = 'Disconnected';
+  document.getElementById('ble-status').classList.remove('connected');
+  const btn = document.getElementById('connect-btn');
+  btn.disabled = false;
+  btn.textContent = 'Reconnect';
+}
+
+// ── BLE Chunk Handlers ───────────────────────────────────────
+function onECGChunk(event) {
+  const chunk = new TextDecoder().decode(event.target.value);
+  const vals  = chunk.split(',').map(Number).filter(v => !isNaN(v));
+  pendingECG.push(...vals);
+  ecgChunks.push(...vals);
+
+  if (ecgChunks.length >= 250) {
+    drawWaveform('ecg-canvas', ecgChunks.slice(0, 250), '--ecg-color');
+    ecgChunks = [];
+  }
+}
+
+function onPPGChunk(event) {
+  const chunk = new TextDecoder().decode(event.target.value);
+  const vals  = chunk.split(',').map(Number).filter(v => !isNaN(v));
+  pendingPPG.push(...vals);
+  ppgChunks.push(...vals);
+
+  if (ppgChunks.length >= 100) {
+    drawWaveform('ppg-canvas', ppgChunks.slice(0, 100), '--ppg-color');
+    ppgChunks = [];
+  }
+}
+
+// ── Vitals Handler ───────────────────────────────────────────
+function onVitals(event) {
+  const raw = new TextDecoder().decode(event.target.value);
+  let data;
+  try { data = JSON.parse(raw); } catch { return; }
+
+  // Update live UI
+  document.getElementById('val-bpm').textContent  = data.bpm  != null ? data.bpm  : '--';
+  document.getElementById('val-spo2').textContent = data.spo2 != null ? data.spo2 : '--';
+  document.getElementById('val-hrv').textContent  = data.hrv  != null ? data.hrv.toFixed(1) : '--';
+
+  const rhythmCard = document.getElementById('rhythm-card');
+  const rhythmVal  = document.getElementById('val-rhythm');
+  if (data.alert) {
+    rhythmVal.textContent = '⚠ Abnormal';
+    rhythmCard.classList.add('alert-card');
+    rhythmCard.classList.remove('ok-card');
+  } else {
+    rhythmVal.textContent = '✓ Normal';
+    rhythmCard.classList.add('ok-card');
+    rhythmCard.classList.remove('alert-card');
+  }
+
+  const bpm  = parseInt(data.bpm);
+  const spo2 = parseInt(data.spo2);
+  document.getElementById('val-bpm').style.color  =
+    (bpm < 45 || bpm > 120) ? 'var(--red)' : 'var(--green)';
+  document.getElementById('val-spo2').style.color =
+    spo2 < 95 ? 'var(--red)' : 'var(--green)';
+
+  // ── Build and persist full record ──
+  const record = {
+    id:        Date.now(),
+    timestamp: new Date().toISOString(),
+    bpm:       data.bpm,
+    spo2:      data.spo2,
+    hrv:       data.hrv,
+    alert:     !!data.alert,
+    // Store waveform samples captured since last vitals packet
+    ecg:       pendingECG.slice(),
+    ppg:       pendingPPG.slice()
+  };
+  pendingECG = [];
+  pendingPPG = [];
+
+  allRecords.unshift(record);   // newest first
+  saveRecords();
+  applyFilterAndRender();
+}
+
+// ── Alert Handler ────────────────────────────────────────────
+function onAlert(event) {
+  const msg = new TextDecoder().decode(event.target.value);
+  if (msg === 'ARRHYTHMIA_ALERT') {
+    const banner = document.getElementById('alert-banner');
+    banner.style.display = 'block';
+    setTimeout(() => { banner.style.display = 'none'; }, 8000);
+  }
+}
+
+// ── Waveform Renderer ────────────────────────────────────────
+function drawWaveform(canvasId, data, colorVar) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width  = (canvas.offsetWidth  || 300) * dpr;
+  canvas.height = (canvas.offsetHeight || 120) * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const W = canvas.offsetWidth  || 300;
+  const H = canvas.offsetHeight || 120;
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Grid
+  ctx.strokeStyle = '#1e1e1e';
+  ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 30) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 20) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+
+  const valid = data.filter(v => v >= 0);
+  if (valid.length < 2) return;
+
+  const min   = Math.min(...valid);
+  const max   = Math.max(...valid);
+  const range = max - min || 1;
+
+  const color = getComputedStyle(document.documentElement)
+    .getPropertyValue(colorVar).trim() || '#00e676';
+
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = 1.5;
+  ctx.lineJoin    = 'round';
+
+  data.forEach((val, i) => {
+    const x = (i / (data.length - 1)) * W;
+    if (val < 0) { ctx.moveTo(x, H / 2); return; }
+    const y = H - ((val - min) / range) * (H - 10) - 5;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+// Same renderer but targets an arbitrary canvas element (for history detail)
+function drawWaveformOnCanvas(canvas, data, colorVar) {
+  if (!canvas || !data || data.length < 2) return;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width  = (canvas.offsetWidth  || 280) * dpr;
+  canvas.height = (canvas.offsetHeight || 90)  * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const W = canvas.offsetWidth  || 280;
+  const H = canvas.offsetHeight || 90;
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = '#1e1e1e';
+  ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 30) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 20) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+
+  const valid = data.filter(v => v >= 0);
+  if (valid.length < 2) return;
+  const min   = Math.min(...valid);
+  const max   = Math.max(...valid);
+  const range = max - min || 1;
+
+  const color = getComputedStyle(document.documentElement)
+    .getPropertyValue(colorVar).trim() || '#00e676';
+
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = 1.5;
+  ctx.lineJoin    = 'round';
+  data.forEach((val, i) => {
+    const x = (i / (data.length - 1)) * W;
+    if (val < 0) { ctx.moveTo(x, H / 2); return; }
+    const y = H - ((val - min) / range) * (H - 10) - 5;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+// ── Filter Logic ─────────────────────────────────────────────
+function setFilter(f) {
+  activeFilter = f;
+  currentPage  = 0;
+  document.querySelectorAll('.filter-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.filter === f);
+  });
+  applyFilterAndRender();
+}
+
+function applyFilterAndRender() {
+  const now   = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const week  = new Date(today); week.setDate(week.getDate() - 6);
+
+  filtered = allRecords.filter(r => {
+    if (activeFilter === 'alert') return r.alert;
+    if (activeFilter === 'today') return new Date(r.timestamp) >= today;
+    if (activeFilter === 'week')  return new Date(r.timestamp) >= week;
+    return true;
+  });
+
+  renderPage();
+}
+
+// ── Render ───────────────────────────────────────────────────
+function renderPage() {
+  const list  = document.getElementById('history-list');
+  const total = filtered.length;
+  const pages = Math.ceil(total / PAGE_SIZE);
+  if (currentPage >= pages && pages > 0) currentPage = pages - 1;
+
+  list.innerHTML = '';
+
+  if (total === 0) {
+    list.innerHTML = `<li style="border:none;background:none;justify-content:center">
+      <span class="placeholder">No recordings yet</span></li>`;
+    document.getElementById('pagination').style.display = 'none';
+    return;
+  }
+
+  const start = currentPage * PAGE_SIZE;
+  const slice = filtered.slice(start, start + PAGE_SIZE);
+
+  slice.forEach(record => {
+    const li = buildHistoryItem(record);
+    list.appendChild(li);
+  });
+
+  // Pagination
+  const pag = document.getElementById('pagination');
+  if (pages > 1) {
+    pag.style.display = 'flex';
+    document.getElementById('page-info').textContent =
+      `Page ${currentPage + 1} of ${pages}  (${total} records)`;
+    document.getElementById('prev-btn').disabled = currentPage === 0;
+    document.getElementById('next-btn').disabled = currentPage >= pages - 1;
+  } else {
+    pag.style.display = 'none';
+  }
+}
+
+function changePage(dir) {
+  currentPage += dir;
+  renderPage();
+  document.getElementById('history-section').scrollIntoView({ behavior: 'smooth' });
+}
+
+// ── Build History Item ────────────────────────────────────────
+function buildHistoryItem(record) {
+  const li = document.createElement('li');
+  li.className = 'hist-item' + (record.alert ? ' has-alert' : '');
+
+  const ts   = new Date(record.timestamp);
+  const date = ts.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+  const time = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const hrv  = record.hrv != null ? parseFloat(record.hrv).toFixed(1) : '--';
+
+  li.innerHTML = `
+    <div class="hist-item-header" onclick="toggleDetail(this)">
+      <div class="hist-vitals">
+        <div class="main-line">
+          BPM <b>${record.bpm ?? '--'}</b> &nbsp;·&nbsp;
+          SpO₂ <b>${record.spo2 != null ? record.spo2 : '--'}%</b> &nbsp;·&nbsp;
+          HRV <b>${hrv} ms</b>
+        </div>
+        <div class="sub-line">${date}</div>
+      </div>
+      <div class="hist-right">
+        <span class="${record.alert ? 'tag-alert' : 'tag-ok'}">${record.alert ? '⚠ Alert' : '✓ OK'}</span>
+        <span class="timestamp">${time}</span>
+        <span class="expand-arrow">▼</span>
+      </div>
+    </div>
+    <div class="hist-detail">
+      <div class="detail-stats">
+        <div class="detail-stat">
+          <div class="ds-label">Heart Rate</div>
+          <div class="ds-value" style="color:${(record.bpm < 45 || record.bpm > 120) ? 'var(--red)' : 'var(--green)'}">${record.bpm ?? '--'}</div>
+        </div>
+        <div class="detail-stat">
+          <div class="ds-label">SpO₂</div>
+          <div class="ds-value" style="color:${record.spo2 < 95 ? 'var(--red)' : 'var(--green)'}">${record.spo2 != null ? record.spo2 + '%' : '--'}</div>
+        </div>
+        <div class="detail-stat">
+          <div class="ds-label">HRV</div>
+          <div class="ds-value" style="color:var(--accent)">${hrv}</div>
+        </div>
+      </div>
+      <div class="detail-wave-label">ECG</div>
+      ${record.ecg && record.ecg.length > 1
+        ? `<canvas class="detail-canvas ecg-wave"></canvas>`
+        : `<div class="no-wave">No ECG data saved</div>`}
+      <div class="detail-wave-label">PPG (IR)</div>
+      ${record.ppg && record.ppg.length > 1
+        ? `<canvas class="detail-canvas ppg-wave"></canvas>`
+        : `<div class="no-wave">No PPG data saved</div>`}
+    </div>
+  `;
+
+  // Store record data on element for lazy canvas draw
+  li._record = record;
+  return li;
+}
+
+// ── Expand / Collapse ─────────────────────────────────────────
+function toggleDetail(header) {
+  const item = header.closest('.hist-item');
+  const wasExpanded = item.classList.contains('expanded');
+  item.classList.toggle('expanded', !wasExpanded);
+
+  if (!wasExpanded) {
+    // Draw waveforms lazily on first expand
+    const record   = item._record;
+    const ecgCanvas = item.querySelector('.ecg-wave');
+    const ppgCanvas = item.querySelector('.ppg-wave');
+
+    // Give DOM a tick to layout the canvas before measuring offsetWidth
+    requestAnimationFrame(() => {
+      if (ecgCanvas && record.ecg) drawWaveformOnCanvas(ecgCanvas, record.ecg, '--ecg-color');
+      if (ppgCanvas && record.ppg) drawWaveformOnCanvas(ppgCanvas, record.ppg, '--ppg-color');
+    });
+  }
+}
+
+// ── Clear History ─────────────────────────────────────────────
+function clearHistory() {
+  if (!confirm(`Delete all ${allRecords.length} recordings? This cannot be undone.`)) return;
+  allRecords = [];
+  saveRecords();
+  applyFilterAndRender();
+}
+
+// ── Browser Gate ─────────────────────────────────────────────
+function showBrowserGate() {
+  document.body.innerHTML = `
+    <div style="
+      min-height:100vh;
+      display:flex;
+      flex-direction:column;
+      justify-content:center;
+      align-items:center;
+      padding:40px;
+      text-align:center;
+      background:#0d0d0d;
+      color:#e0e0e0;
+    ">
+      <div style="font-size:3rem;margin-bottom:20px">📵</div>
+      <h2 style="color:#00e5ff;font-size:1.3rem;margin-bottom:12px">Chrome on Android required</h2>
+      <p style="color:#666;font-size:0.9rem;line-height:1.6">
+        Web Bluetooth is only supported in<br>
+        <b style="color:#e0e0e0">Chrome on Android</b>.<br><br>
+        Open this page on your Android phone in Chrome.
+      </p>
+      <div style="
+        margin-top:28px;
+        padding:12px 20px;
+        border:1px solid #2a2a2a;
+        border-radius:10px;
+        font-size:0.75rem;
+        color:#555;
+        max-width:280px;
+      ">
+        Firefox, Safari, and desktop browsers do not support the Web Bluetooth API.
+      </div>
+    </div>`;
+}
+
+// ── Init ──────────────────────────────────────────────────────
+if (!navigator.bluetooth) {
+  showBrowserGate();
+} else {
+  loadRecords();
+  applyFilterAndRender();
+  updateStorageInfo();
+}
+</script>
+</body>
+</html>
